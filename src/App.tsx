@@ -11,9 +11,12 @@ import { motion, AnimatePresence } from 'motion/react';
 const CANVAS_WIDTH = 800;
 const CANVAS_HEIGHT = 600;
 const ROAD_WIDTH = 440;
+const SIDEWALK_WIDTH = 80;
 const ROAD_LEFT = (CANVAS_WIDTH - ROAD_WIDTH) / 2;
 const ROAD_RIGHT = ROAD_LEFT + ROAD_WIDTH;
 const LANE_WIDTH = ROAD_WIDTH / 4;
+
+const COMPANIES = ['Google', 'Meta', 'X', 'YouTube', 'Facebook', 'Oracle', 'Amazon', 'Apple', 'Microsoft', 'Netflix'];
 
 const CAR_WIDTH = 42;
 const CAR_HEIGHT = 85;
@@ -68,7 +71,16 @@ export default function App() {
   });
 
   const objectsRef = useRef<GameObject[]>([]);
-  const sceneryRef = useRef<{x: number, y: number, type: 'TREE' | 'BUILDING', height: number, width: number, color: string}[]>([]);
+  const sceneryRef = useRef<{
+    x: number, 
+    y: number, 
+    type: 'BUILDING' | 'PEDESTRIAN', 
+    height: number, 
+    width: number, 
+    color: string,
+    companyName?: string,
+    walkingPhase?: number
+  }[]>([]);
   const particlesRef = useRef<Particle[]>([]);
   const keysPressed = useRef<Record<string, boolean>>({});
   const frameCount = useRef(0);
@@ -501,17 +513,27 @@ export default function App() {
       }
 
       // Spawn Scenery
-      if (frameCount.current % 20 === 0) {
+      if (frameCount.current % 15 === 0) {
         const side = Math.random() > 0.5 ? 1 : -1;
-        const type = Math.random() > 0.3 ? 'TREE' : 'BUILDING';
-        const x = side === 1 ? ROAD_RIGHT + 50 + Math.random() * 100 : ROAD_LEFT - 150 - Math.random() * 100;
+        const typeRoll = Math.random();
+        const type = typeRoll > 0.4 ? 'BUILDING' : 'PEDESTRIAN';
+        
+        let x = 0;
+        if (side === 1) {
+          x = type === 'BUILDING' ? ROAD_RIGHT + SIDEWALK_WIDTH + 10 : ROAD_RIGHT + 10 + Math.random() * (SIDEWALK_WIDTH - 20);
+        } else {
+          x = type === 'BUILDING' ? ROAD_LEFT - SIDEWALK_WIDTH - 90 : ROAD_LEFT - SIDEWALK_WIDTH + 10 + Math.random() * (SIDEWALK_WIDTH - 20);
+        }
+
         sceneryRef.current.push({
           x,
           y: -200,
           type,
-          width: type === 'TREE' ? 40 : 80,
-          height: type === 'TREE' ? 40 : 120,
-          color: type === 'TREE' ? '#15803d' : '#52525b'
+          width: type === 'BUILDING' ? 80 : 15,
+          height: type === 'BUILDING' ? 120 + Math.random() * 80 : 30,
+          color: type === 'BUILDING' ? '#3f3f46' : '#f8fafc',
+          companyName: type === 'BUILDING' ? COMPANIES[Math.floor(Math.random() * COMPANIES.length)] : undefined,
+          walkingPhase: type === 'PEDESTRIAN' ? Math.random() * Math.PI * 2 : undefined
         });
       }
 
@@ -519,6 +541,10 @@ export default function App() {
       for (let i = sceneryRef.current.length - 1; i >= 0; i--) {
         const s = sceneryRef.current[i];
         s.y += currentSpeed;
+        if (s.type === 'PEDESTRIAN' && s.walkingPhase !== undefined) {
+          s.walkingPhase += 0.1;
+          s.y += Math.sin(s.walkingPhase) * 2; // Slight walking movement
+        }
         if (s.y > CANVAS_HEIGHT + 200) sceneryRef.current.splice(i, 1);
       }
 
@@ -582,56 +608,68 @@ export default function App() {
     };
 
     const draw = () => {
-      // Background (City Stone)
-      ctx.fillStyle = '#27272a';
+      // Background (GTA Style Darker Asphalt/City)
+      ctx.fillStyle = '#18181b';
       ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
-      // Scenery (Trees & Buildings)
+      // Sidewalks
+      ctx.fillStyle = '#3f3f46';
+      ctx.fillRect(ROAD_LEFT - SIDEWALK_WIDTH, 0, SIDEWALK_WIDTH, CANVAS_HEIGHT);
+      ctx.fillRect(ROAD_RIGHT, 0, SIDEWALK_WIDTH, CANVAS_HEIGHT);
+      
+      // Sidewalk Texture (Lines)
+      ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+      ctx.lineWidth = 2;
+      for (let i = 0; i < CANVAS_HEIGHT; i += 40) {
+        const y = (i + roadOffset.current) % CANVAS_HEIGHT;
+        ctx.beginPath();
+        ctx.moveTo(ROAD_LEFT - SIDEWALK_WIDTH, y);
+        ctx.lineTo(ROAD_LEFT, y);
+        ctx.moveTo(ROAD_RIGHT, y);
+        ctx.lineTo(ROAD_RIGHT + SIDEWALK_WIDTH, y);
+        ctx.stroke();
+      }
+
+      // Scenery (Buildings & Pedestrians)
       sceneryRef.current.forEach(s => {
         ctx.save();
-        if (s.type === 'TREE') {
-          // Realistic Tree
-          const trunkGrad = ctx.createLinearGradient(s.x + s.width/2 - 5, s.y, s.x + s.width/2 + 5, s.y);
-          trunkGrad.addColorStop(0, '#451a03');
-          trunkGrad.addColorStop(1, '#78350f');
-          ctx.fillStyle = trunkGrad;
-          ctx.fillRect(s.x + s.width/2 - 6, s.y + s.height - 15, 12, 20);
-          
-          const leafGrad = ctx.createRadialGradient(s.x + s.width/2, s.y + s.height/2, 5, s.x + s.width/2, s.y + s.height/2, s.width/2);
-          leafGrad.addColorStop(0, '#22c55e');
-          leafGrad.addColorStop(1, '#14532d');
-          ctx.fillStyle = leafGrad;
+        if (s.type === 'PEDESTRIAN') {
+          // Draw Person
+          ctx.translate(s.x, s.y);
+          // Head
+          ctx.fillStyle = '#fca5a5';
           ctx.beginPath();
-          ctx.arc(s.x + s.width/2, s.y + s.height/2, s.width/2, 0, Math.PI * 2);
+          ctx.arc(0, 0, 5, 0, Math.PI * 2);
           ctx.fill();
-          // Texture
-          ctx.fillStyle = 'rgba(0,0,0,0.1)';
-          for(let i = 0; i < 5; i++) {
-            ctx.beginPath();
-            ctx.arc(s.x + Math.random()*s.width, s.y + Math.random()*s.height, 5, 0, Math.PI*2);
-            ctx.fill();
-          }
+          // Body
+          ctx.fillStyle = '#3b82f6';
+          ctx.fillRect(-4, 5, 8, 12);
+          // Legs (walking animation)
+          ctx.fillStyle = '#1e293b';
+          const legOffset = Math.sin(s.walkingPhase || 0) * 4;
+          ctx.fillRect(-4, 17, 3, 8 + legOffset);
+          ctx.fillRect(1, 17, 3, 8 - legOffset);
         } else {
           // Realistic Building
-          ctx.shadowBlur = 15;
-          ctx.shadowColor = 'rgba(0,0,0,0.5)';
+          ctx.shadowBlur = 20;
+          ctx.shadowColor = 'rgba(0,0,0,0.6)';
           const bGrad = ctx.createLinearGradient(s.x, s.y, s.x + s.width, s.y);
-          bGrad.addColorStop(0, '#3f3f46');
-          bGrad.addColorStop(0.5, '#71717a');
-          bGrad.addColorStop(1, '#3f3f46');
+          bGrad.addColorStop(0, '#27272a');
+          bGrad.addColorStop(0.5, '#52525b');
+          bGrad.addColorStop(1, '#27272a');
           ctx.fillStyle = bGrad;
           ctx.fillRect(s.x, s.y, s.width, s.height);
           
           ctx.shadowBlur = 0;
           // Windows with glow
           for(let i = 0; i < 3; i++) {
-            for(let j = 0; j < 5; j++) {
+            for(let j = 0; j < Math.floor(s.height / 20); j++) {
               const wx = s.x + 10 + i * 22;
               const wy = s.y + 10 + j * 22;
-              const isLit = Math.random() > 0.3;
-              ctx.fillStyle = isLit ? '#fef08a' : '#18181b';
+              const isLit = (Math.sin(s.x + s.y + i + j) > 0.2);
+              ctx.fillStyle = isLit ? '#fef08a' : '#09090b';
               if (isLit) {
-                ctx.shadowBlur = 10;
+                ctx.shadowBlur = 15;
                 ctx.shadowColor = '#fef08a';
               }
               ctx.fillRect(wx, wy, 12, 12);
@@ -639,34 +677,25 @@ export default function App() {
             }
           }
           // Roof ledge
-          ctx.fillStyle = '#18181b';
-          ctx.fillRect(s.x - 5, s.y, s.width + 10, 8);
+          ctx.fillStyle = '#09090b';
+          ctx.fillRect(s.x - 5, s.y, s.width + 10, 10);
+
+          // Company Name on top
+          if (s.companyName) {
+            ctx.fillStyle = '#fff';
+            ctx.font = 'black 14px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = '#fff';
+            ctx.fillText(s.companyName.toUpperCase(), s.x + s.width / 2, s.y - 10);
+            ctx.shadowBlur = 0;
+          }
         }
         ctx.restore();
       });
 
-      // Scenery (London Landmarks)
-      const sceneryY = (roadOffset.current * 2) % CANVAS_HEIGHT;
-      
-      // Big Ben
-      ctx.fillStyle = '#d4d4d8';
-      ctx.fillRect(50, sceneryY - 200, 60, 300);
-      ctx.fillStyle = '#fff';
-      ctx.beginPath();
-      ctx.arc(80, sceneryY - 150, 15, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = '#000';
-      ctx.stroke();
-
-      // London Eye
-      ctx.strokeStyle = '#71717a';
-      ctx.lineWidth = 4;
-      ctx.beginPath();
-      ctx.arc(700, ((sceneryY + 300) % CANVAS_HEIGHT) - 100, 80, 0, Math.PI * 2);
-      ctx.stroke();
-
       // Road
-      ctx.fillStyle = '#3f3f46';
+      ctx.fillStyle = '#09090b';
       ctx.fillRect(ROAD_LEFT, 0, ROAD_WIDTH, CANVAS_HEIGHT);
 
       // Road Edges (Double Yellow)
