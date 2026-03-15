@@ -17,6 +17,7 @@ const ROAD_RIGHT = ROAD_LEFT + ROAD_WIDTH;
 const LANE_WIDTH = ROAD_WIDTH / 4;
 
 const COMPANIES = ['Google', 'Meta', 'X', 'YouTube', 'Facebook', 'Oracle', 'Amazon', 'Apple', 'Microsoft', 'Netflix'];
+const WEEKND_SONGS = ["Blinding Lights", "Save Your Tears", "Starboy", "The Hills", "Can't Feel My Face", "After Hours"];
 
 const CAR_WIDTH = 42;
 const CAR_HEIGHT = 85;
@@ -27,7 +28,7 @@ const INITIAL_SPEED = 6;
 const SPEED_INCREMENT = 0.1;
 const WEATHER_CYCLE_DURATION = 10000; // 10 seconds
 
-type GameState = 'START' | 'PLAYING' | 'GAME_OVER';
+type GameState = 'START' | 'PLAYING' | 'PAUSED' | 'GAME_OVER';
 type Weather = 'CLEAR' | 'RAIN';
 
 type GameObject = {
@@ -59,9 +60,16 @@ export default function App() {
   const [highScore, setHighScore] = useState(0);
   const [hasShield, setHasShield] = useState(false);
   const [weather, setWeather] = useState<Weather>('CLEAR');
+  const nitroActiveRef = useRef(false);
   const [nitroActive, setNitroActive] = useState(false);
+  const [currentSong, setCurrentSong] = useState(WEEKND_SONGS[0]);
+  const [fuel, setFuel] = useState(100);
 
   // Game refs
+  const gameStateRef = useRef<GameState>('START');
+  const hasShieldRef = useRef(false);
+  const fuelRef = useRef(100);
+  const scoreRef = useRef(0);
   const playerRef = useRef({
     x: ROAD_LEFT + LANE_WIDTH * 2.5 - CAR_WIDTH / 2,
     y: CANVAS_HEIGHT - 120,
@@ -74,12 +82,13 @@ export default function App() {
   const sceneryRef = useRef<{
     x: number, 
     y: number, 
-    type: 'BUILDING' | 'PEDESTRIAN', 
+    type: 'BUILDING' | 'PEDESTRIAN' | 'STREET_LIGHT' | 'AIRPORT' | 'PLANE', 
     height: number, 
     width: number, 
     color: string,
     companyName?: string,
-    walkingPhase?: number
+    walkingPhase?: number,
+    speed?: number
   }[]>([]);
   const particlesRef = useRef<Particle[]>([]);
   const keysPressed = useRef<Record<string, boolean>>({});
@@ -88,71 +97,120 @@ export default function App() {
   const roadOffset = useRef(0);
   const lastWeatherChange = useRef(Date.now());
   const nextObjectId = useRef(0);
+  const screenShakeRef = useRef(0);
 
   // Audio Context (Lazy Init)
   const audioCtx = useRef<AudioContext | null>(null);
   const engineOsc = useRef<OscillatorNode | null>(null);
   const engineGain = useRef<GainNode | null>(null);
+  const musicOsc = useRef<OscillatorNode | null>(null);
+  const musicGain = useRef<GainNode | null>(null);
 
   const initAudio = () => {
     if (audioCtx.current) return;
     audioCtx.current = new (window.AudioContext || (window as any).webkitAudioContext)();
     
+    // Engine Sound (Minimal)
     engineOsc.current = audioCtx.current.createOscillator();
     engineGain.current = audioCtx.current.createGain();
-    
     engineOsc.current.type = 'sawtooth';
     engineOsc.current.frequency.setValueAtTime(50, audioCtx.current.currentTime);
-    engineGain.current.gain.setValueAtTime(0.05, audioCtx.current.currentTime);
-    
+    engineGain.current.gain.setValueAtTime(0.01, audioCtx.current.currentTime);
     engineOsc.current.connect(engineGain.current);
     engineGain.current.connect(audioCtx.current.destination);
     engineOsc.current.start();
+
+    // Background Music Simulation (Synthwave vibe)
+    musicOsc.current = audioCtx.current.createOscillator();
+    musicGain.current = audioCtx.current.createGain();
+    musicOsc.current.type = 'triangle';
+    musicOsc.current.frequency.setValueAtTime(130.81, audioCtx.current.currentTime); // C3
+    musicGain.current.gain.setValueAtTime(0.03, audioCtx.current.currentTime);
+    musicOsc.current.connect(musicGain.current);
+    musicGain.current.connect(audioCtx.current.destination);
+    musicOsc.current.start();
+    
+    // Simple Arpeggio Loop for Music
+    const playNote = (freq: number, time: number) => {
+      if (!audioCtx.current || !musicOsc.current) return;
+      musicOsc.current.frequency.setTargetAtTime(freq, time, 0.05);
+    };
+
+    const notes = [130.81, 164.81, 196.00, 220.00]; // C3, E3, G3, A3
+    let noteIdx = 0;
+    setInterval(() => {
+      if (gameState === 'PLAYING' && audioCtx.current) {
+        playNote(notes[noteIdx], audioCtx.current.currentTime);
+        noteIdx = (noteIdx + 1) % notes.length;
+      }
+    }, 500);
   };
 
   const playCrashSound = () => {
     if (!audioCtx.current) return;
-    const osc = audioCtx.current.createOscillator();
-    const g = audioCtx.current.createGain();
-    const noise = audioCtx.current.createBufferSource();
+    const now = audioCtx.current.currentTime;
     
-    // Simple noise-like crash
-    osc.type = 'sawtooth';
-    osc.frequency.setValueAtTime(100, audioCtx.current.currentTime);
-    osc.frequency.exponentialRampToValueAtTime(40, audioCtx.current.currentTime + 0.5);
-    
-    g.gain.setValueAtTime(0.3, audioCtx.current.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.01, audioCtx.current.currentTime + 0.5);
-    
-    osc.connect(g);
-    g.connect(audioCtx.current.destination);
-    osc.start();
-    osc.stop(audioCtx.current.currentTime + 0.5);
+    // Low thud (Reduced)
+    const osc1 = audioCtx.current.createOscillator();
+    const g1 = audioCtx.current.createGain();
+    osc1.type = 'sine';
+    osc1.frequency.setValueAtTime(60, now);
+    osc1.frequency.exponentialRampToValueAtTime(0.01, now + 0.8);
+    g1.gain.setValueAtTime(0.2, now);
+    g1.gain.exponentialRampToValueAtTime(0.01, now + 0.8);
+    osc1.connect(g1);
+    g1.connect(audioCtx.current.destination);
+    osc1.start();
+    osc1.stop(now + 0.8);
+
+    // High crunch (Reduced)
+    const osc2 = audioCtx.current.createOscillator();
+    const g2 = audioCtx.current.createGain();
+    osc2.type = 'sawtooth';
+    osc2.frequency.setValueAtTime(150, now);
+    osc2.frequency.exponentialRampToValueAtTime(40, now + 0.4);
+    g2.gain.setValueAtTime(0.1, now);
+    g2.gain.exponentialRampToValueAtTime(0.01, now + 0.4);
+    osc2.connect(g2);
+    g2.connect(audioCtx.current.destination);
+    osc2.start();
+    osc2.stop(now + 0.4);
   };
 
   const playNitroSound = (active: boolean) => {
     if (!audioCtx.current || !active) return;
+    const now = audioCtx.current.currentTime;
+    
+    // Jet engine roar (Reduced)
     const osc = audioCtx.current.createOscillator();
     const g = audioCtx.current.createGain();
-    osc.type = 'triangle';
-    osc.frequency.setValueAtTime(400, audioCtx.current.currentTime);
-    osc.frequency.exponentialRampToValueAtTime(800, audioCtx.current.currentTime + 0.1);
-    g.gain.setValueAtTime(0.1, audioCtx.current.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.01, audioCtx.current.currentTime + 0.2);
-    osc.connect(g);
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(100, now);
+    osc.frequency.exponentialRampToValueAtTime(300, now + 0.5);
+    
+    const filter = audioCtx.current.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(1000, now);
+    filter.frequency.exponentialRampToValueAtTime(4000, now + 0.5);
+
+    g.gain.setValueAtTime(0.05, now);
+    g.gain.exponentialRampToValueAtTime(0.01, now + 0.5);
+    
+    osc.connect(filter);
+    filter.connect(g);
     g.connect(audioCtx.current.destination);
     osc.start();
-    osc.stop(audioCtx.current.currentTime + 0.2);
+    osc.stop(now + 0.5);
   };
 
-  const playSound = (freq: number, type: OscillatorType = 'sine', duration = 0.1, volume = 0.1) => {
+  const playSound = (freq: number, type: OscillatorType = 'sine', duration = 0.1, volume = 0.02) => {
     if (!audioCtx.current) return;
     const osc = audioCtx.current.createOscillator();
     const g = audioCtx.current.createGain();
     osc.type = type;
     osc.frequency.setValueAtTime(freq, audioCtx.current.currentTime);
     g.gain.setValueAtTime(volume, audioCtx.current.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.01, audioCtx.current.currentTime + duration);
+    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.current.currentTime + duration);
     osc.connect(g);
     g.connect(audioCtx.current.destination);
     osc.start();
@@ -171,20 +229,36 @@ export default function App() {
     sceneryRef.current = [];
     particlesRef.current = [];
     setScore(0);
+    scoreRef.current = 0;
+    setFuel(100);
+    fuelRef.current = 100;
     setHasShield(false);
+    hasShieldRef.current = false;
     setWeather('CLEAR');
     gameSpeed.current = INITIAL_SPEED;
     roadOffset.current = 0;
     frameCount.current = 0;
     lastWeatherChange.current = Date.now();
+    screenShakeRef.current = 0;
   }, []);
 
   const startGame = () => {
     initAudio();
     resetGame();
     setGameState('PLAYING');
+    gameStateRef.current = 'PLAYING';
     if (audioCtx.current?.state === 'suspended') {
       audioCtx.current.resume();
+    }
+  };
+
+  const togglePause = () => {
+    if (gameState === 'PLAYING') {
+      setGameState('PAUSED');
+      gameStateRef.current = 'PAUSED';
+    } else if (gameState === 'PAUSED') {
+      setGameState('PLAYING');
+      gameStateRef.current = 'PLAYING';
     }
   };
 
@@ -193,6 +267,9 @@ export default function App() {
       keysPressed.current[e.code] = true;
       if (e.code === 'Space' && (gameState === 'START' || gameState === 'GAME_OVER')) {
         startGame();
+      }
+      if (e.code === 'Escape') {
+        togglePause();
       }
     };
     const handleKeyUp = (e: KeyboardEvent) => {
@@ -209,9 +286,11 @@ export default function App() {
   useEffect(() => {
     if (gameState !== 'PLAYING') {
       if (engineGain.current) engineGain.current.gain.setTargetAtTime(0, audioCtx.current?.currentTime || 0, 0.1);
+      if (musicGain.current) musicGain.current.gain.setTargetAtTime(0, audioCtx.current?.currentTime || 0, 0.1);
       return;
     }
-    if (engineGain.current) engineGain.current.gain.setTargetAtTime(0.05, audioCtx.current?.currentTime || 0, 0.1);
+    if (engineGain.current) engineGain.current.gain.setTargetAtTime(0.01, audioCtx.current?.currentTime || 0, 0.1);
+    if (musicGain.current) musicGain.current.gain.setTargetAtTime(0.05, audioCtx.current?.currentTime || 0, 0.1);
 
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -432,11 +511,25 @@ export default function App() {
       }
 
       // Nitro & Speed
-      const isNitro = keysPressed.current['ShiftLeft'];
+      const isNitro = !!keysPressed.current['ShiftLeft'] && fuelRef.current > 0;
+      nitroActiveRef.current = isNitro;
       if (isNitro && !nitroActive) playNitroSound(true);
-      setNitroActive(isNitro);
+      if (isNitro !== nitroActive) setNitroActive(isNitro);
       const currentSpeed = isNitro ? gameSpeed.current * 1.8 : gameSpeed.current;
       
+      if (isNitro) {
+        fuelRef.current = Math.max(0, fuelRef.current - 0.2);
+        if (frameCount.current % 5 === 0) setFuel(Math.floor(fuelRef.current));
+      } else {
+        fuelRef.current = Math.min(100, fuelRef.current + 0.05);
+        if (frameCount.current % 10 === 0) setFuel(Math.floor(fuelRef.current));
+      }
+
+      // Music Change (every 10 seconds = 600 frames)
+      if (frameCount.current % 600 === 0) {
+        setCurrentSong(WEEKND_SONGS[Math.floor(frameCount.current / 600) % WEEKND_SONGS.length]);
+      }
+
       if (isNitro) {
         // Nitro particles
         particlesRef.current.push({
@@ -516,36 +609,56 @@ export default function App() {
       if (frameCount.current % 15 === 0) {
         const side = Math.random() > 0.5 ? 1 : -1;
         const typeRoll = Math.random();
-        const type = typeRoll > 0.4 ? 'BUILDING' : 'PEDESTRIAN';
+        
+        // Street Lights after 3 seconds (180 frames)
+        const canSpawnLights = frameCount.current > 180;
+        
+        let type: 'BUILDING' | 'PEDESTRIAN' | 'STREET_LIGHT' | 'AIRPORT' | 'PLANE' = 'BUILDING';
+        if (canSpawnLights && typeRoll < 0.2) type = 'STREET_LIGHT';
+        else if (side === 1 && typeRoll < 0.1) type = 'AIRPORT';
+        else if (side === 1 && typeRoll < 0.15) type = 'PLANE';
+        else if (typeRoll > 0.6) type = 'BUILDING';
+        else type = 'PEDESTRIAN';
         
         let x = 0;
         if (side === 1) {
-          x = type === 'BUILDING' ? ROAD_RIGHT + SIDEWALK_WIDTH + 10 : ROAD_RIGHT + 10 + Math.random() * (SIDEWALK_WIDTH - 20);
+          if (type === 'AIRPORT') x = ROAD_RIGHT + SIDEWALK_WIDTH + 150;
+          else if (type === 'PLANE') x = ROAD_RIGHT + SIDEWALK_WIDTH + 200;
+          else if (type === 'STREET_LIGHT') x = ROAD_RIGHT + 5;
+          else x = type === 'BUILDING' ? ROAD_RIGHT + SIDEWALK_WIDTH + 10 : ROAD_RIGHT + 10 + Math.random() * (SIDEWALK_WIDTH - 20);
         } else {
-          x = type === 'BUILDING' ? ROAD_LEFT - SIDEWALK_WIDTH - 90 : ROAD_LEFT - SIDEWALK_WIDTH + 10 + Math.random() * (SIDEWALK_WIDTH - 20);
+          if (type === 'STREET_LIGHT') x = ROAD_LEFT - 15;
+          else if (type === 'AIRPORT' || type === 'PLANE') { /* Airport only on right */ type = 'BUILDING'; x = ROAD_LEFT - SIDEWALK_WIDTH - 90; }
+          else x = type === 'BUILDING' ? ROAD_LEFT - SIDEWALK_WIDTH - 90 : ROAD_LEFT - SIDEWALK_WIDTH + 10 + Math.random() * (SIDEWALK_WIDTH - 20);
         }
 
         sceneryRef.current.push({
           x,
           y: -200,
           type,
-          width: type === 'BUILDING' ? 80 : 15,
-          height: type === 'BUILDING' ? 120 + Math.random() * 80 : 30,
-          color: type === 'BUILDING' ? '#3f3f46' : '#f8fafc',
+          width: type === 'BUILDING' ? 80 : (type === 'AIRPORT' ? 300 : (type === 'PLANE' ? 60 : 15)),
+          height: type === 'BUILDING' ? 120 + Math.random() * 80 : (type === 'AIRPORT' ? 400 : (type === 'PLANE' ? 40 : 30)),
+          color: type === 'BUILDING' ? '#3f3f46' : (type === 'AIRPORT' ? '#27272a' : (type === 'PLANE' ? '#f8fafc' : '#f8fafc')),
           companyName: type === 'BUILDING' ? COMPANIES[Math.floor(Math.random() * COMPANIES.length)] : undefined,
-          walkingPhase: type === 'PEDESTRIAN' ? Math.random() * Math.PI * 2 : undefined
+          walkingPhase: type === 'PEDESTRIAN' ? Math.random() * Math.PI * 2 : undefined,
+          speed: type === 'PLANE' ? currentSpeed * 1.5 : undefined
         });
       }
 
       // Update Scenery
       for (let i = sceneryRef.current.length - 1; i >= 0; i--) {
         const s = sceneryRef.current[i];
-        s.y += currentSpeed;
+        if (s.type === 'PLANE' && s.speed) {
+          s.y += s.speed;
+        } else {
+          s.y += currentSpeed;
+        }
+
         if (s.type === 'PEDESTRIAN' && s.walkingPhase !== undefined) {
           s.walkingPhase += 0.1;
           s.y += Math.sin(s.walkingPhase) * 2; // Slight walking movement
         }
-        if (s.y > CANVAS_HEIGHT + 200) sceneryRef.current.splice(i, 1);
+        if (s.y > CANVAS_HEIGHT + 400) sceneryRef.current.splice(i, 1);
       }
 
       // Update Objects
@@ -557,27 +670,48 @@ export default function App() {
         // Collision
         const p = playerRef.current;
         if (
-          p.x < obj.x + obj.width &&
-          p.x + p.width > obj.x &&
-          p.y < obj.y + obj.height &&
-          p.y + p.height > obj.y
+          p.x < obj.x + obj.width - 5 &&
+          p.x + p.width > obj.x + 5 &&
+          p.y < obj.y + obj.height - 5 &&
+          p.y + p.height > obj.y + 5
         ) {
           if (obj.type === 'SHIELD') {
             setHasShield(true);
+            hasShieldRef.current = true;
             playSound(1000, 'sine', 0.1);
             objectsRef.current.splice(i, 1);
           } else if (obj.type === 'CHECKPOINT') {
-            setScore(s => s + 10);
+            setScore(s => {
+              const ns = s + 10;
+              scoreRef.current = ns;
+              return ns;
+            });
+            fuelRef.current = Math.min(100, fuelRef.current + 20);
+            setFuel(Math.floor(fuelRef.current));
             playSound(1200, 'sine', 0.3);
             objectsRef.current.splice(i, 1);
           } else {
-            if (hasShield) {
+            if (hasShieldRef.current) {
               setHasShield(false);
+              hasShieldRef.current = false;
               playSound(200, 'square', 0.2);
               objectsRef.current.splice(i, 1);
             } else {
               playCrashSound();
-              setGameState('GAME_OVER');
+              screenShakeRef.current = 20;
+              // Spawn explosion particles
+              for(let j = 0; j < 30; j++) {
+                particlesRef.current.push({
+                  x: p.x + p.width/2,
+                  y: p.y + p.height/2,
+                  vx: (Math.random() - 0.5) * 15,
+                  vy: (Math.random() - 0.5) * 15,
+                  life: 1,
+                  color: Math.random() > 0.5 ? '#ef4444' : '#f59e0b'
+                });
+              }
+              gameStateRef.current = 'GAME_OVER';
+              setTimeout(() => setGameState('GAME_OVER'), 500);
               return;
             }
           }
@@ -588,6 +722,7 @@ export default function App() {
           if (obj.type === 'CAR' || obj.type === 'BUS' || obj.type === 'CAB' || obj.type === 'BIKE') {
             setScore(s => {
               const newScore = s + (isNitro ? 2 : 1);
+              scoreRef.current = newScore;
               gameSpeed.current = INITIAL_SPEED + (newScore * SPEED_INCREMENT);
               return newScore;
             });
@@ -630,6 +765,20 @@ export default function App() {
         ctx.stroke();
       }
 
+      // Speed Lines for Nitro
+      if (nitroActiveRef.current) {
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+        ctx.lineWidth = 2;
+        for(let i = 0; i < 10; i++) {
+          const lx = Math.random() * CANVAS_WIDTH;
+          const ly = Math.random() * CANVAS_HEIGHT;
+          ctx.beginPath();
+          ctx.moveTo(lx, ly);
+          ctx.lineTo(lx, ly + 100);
+          ctx.stroke();
+        }
+      }
+
       // Scenery (Buildings & Pedestrians)
       sceneryRef.current.forEach(s => {
         ctx.save();
@@ -649,6 +798,59 @@ export default function App() {
           const legOffset = Math.sin(s.walkingPhase || 0) * 4;
           ctx.fillRect(-4, 17, 3, 8 + legOffset);
           ctx.fillRect(1, 17, 3, 8 - legOffset);
+        } else if (s.type === 'STREET_LIGHT') {
+          // Post
+          ctx.fillStyle = '#71717a';
+          ctx.fillRect(s.x - 2, s.y, 4, 60);
+          // Arm
+          const isRight = s.x > CANVAS_WIDTH / 2;
+          ctx.fillRect(isRight ? s.x - 15 : s.x, s.y, 15, 4);
+          // Lamp
+          ctx.fillStyle = '#fef08a';
+          ctx.shadowBlur = 20;
+          ctx.shadowColor = '#fef08a';
+          ctx.beginPath();
+          ctx.arc(isRight ? s.x - 15 : s.x + 15, s.y + 2, 6, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.shadowBlur = 0;
+          // Light Cone
+          const lightGrad = ctx.createRadialGradient(
+            isRight ? s.x - 15 : s.x + 15, s.y + 2, 0,
+            isRight ? s.x - 15 : s.x + 15, s.y + 2, 100
+          );
+          lightGrad.addColorStop(0, 'rgba(254, 240, 138, 0.2)');
+          lightGrad.addColorStop(1, 'rgba(254, 240, 138, 0)');
+          ctx.fillStyle = lightGrad;
+          ctx.beginPath();
+          ctx.arc(isRight ? s.x - 15 : s.x + 15, s.y + 2, 100, 0, Math.PI * 2);
+          ctx.fill();
+        } else if (s.type === 'AIRPORT') {
+          // Runway
+          ctx.fillStyle = '#18181b';
+          ctx.fillRect(s.x, s.y, s.width, s.height);
+          ctx.strokeStyle = '#fff';
+          ctx.setLineDash([20, 20]);
+          ctx.beginPath();
+          ctx.moveTo(s.x + s.width / 2, s.y);
+          ctx.lineTo(s.x + s.width / 2, s.y + s.height);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          // Hangar
+          ctx.fillStyle = '#3f3f46';
+          ctx.fillRect(s.x + 50, s.y + 50, 100, 100);
+        } else if (s.type === 'PLANE') {
+          // Plane Body
+          ctx.save();
+          ctx.translate(s.x, s.y);
+          ctx.fillStyle = '#f8fafc';
+          ctx.beginPath();
+          ctx.ellipse(0, 0, 10, 30, 0, 0, Math.PI * 2);
+          ctx.fill();
+          // Wings
+          ctx.fillRect(-30, -5, 60, 10);
+          // Tail
+          ctx.fillRect(-10, 20, 20, 5);
+          ctx.restore();
         } else {
           // Realistic Building
           ctx.shadowBlur = 20;
@@ -805,8 +1007,24 @@ export default function App() {
     };
 
     const loop = () => {
+      if (gameStateRef.current !== 'PLAYING') return;
       update();
+      
+      // Apply screen shake
+      if (screenShakeRef.current > 0) {
+        ctx.save();
+        const dx = (Math.random() - 0.5) * screenShakeRef.current;
+        const dy = (Math.random() - 0.5) * screenShakeRef.current;
+        ctx.translate(dx, dy);
+        screenShakeRef.current = Math.max(0, screenShakeRef.current - 1);
+      }
+
       draw();
+
+      if (screenShakeRef.current > 0) {
+        ctx.restore();
+      }
+
       animationFrameId = requestAnimationFrame(loop);
     };
 
@@ -815,7 +1033,7 @@ export default function App() {
     return () => {
       cancelAnimationFrame(animationFrameId);
     };
-  }, [gameState, hasShield, weather]);
+  }, [gameState]);
 
   useEffect(() => {
     if (score > highScore) setHighScore(score);
@@ -851,6 +1069,28 @@ export default function App() {
                 </div>
 
                 <div className="flex flex-col items-end gap-4">
+                  <div className="flex items-center gap-3 bg-black/60 backdrop-blur-xl px-6 py-3 rounded-xl border-l-4 border-blue-500 skew-x-[-12deg]">
+                    <div className="flex flex-col items-end">
+                      <span className="text-white/50 text-[10px] font-bold uppercase tracking-widest">Fuel Reserve</span>
+                      <div className="w-32 h-2 bg-white/10 rounded-full overflow-hidden mt-1">
+                        <motion.div 
+                          className={`h-full ${fuel < 25 ? 'bg-red-500' : 'bg-blue-500'}`}
+                          animate={{ width: `${fuel}%` }}
+                          transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div className="flex items-center gap-3 bg-black/60 backdrop-blur-xl px-6 py-3 rounded-xl border-l-4 border-blue-500 skew-x-[-12deg]">
+                    <div className="flex flex-col items-end">
+                      <span className="text-white/50 text-[10px] font-bold uppercase tracking-widest">Now Playing</span>
+                      <span className="text-white text-sm font-black uppercase tracking-widest italic truncate max-w-[150px]">
+                        {currentSong}
+                      </span>
+                    </div>
+                  </div>
+                  
                   <div className="flex items-center gap-3 bg-black/60 backdrop-blur-xl px-6 py-3 rounded-xl border-l-4 border-blue-500 skew-x-[-12deg]">
                     {weather === 'RAIN' ? <CloudRain size={20} className="text-blue-400" /> : <Sun size={20} className="text-yellow-400" />}
                     <span className="text-white text-sm font-black uppercase tracking-widest italic">{weather}</span>
@@ -888,7 +1128,28 @@ export default function App() {
 
         {/* Menus */}
         <AnimatePresence>
-          {gameState !== 'PLAYING' && (
+          {gameState === 'PAUSED' && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50"
+            >
+              <div className="text-center">
+                <h2 className="text-9xl font-black text-white italic tracking-tighter mb-8 uppercase">PAUSED</h2>
+                <button
+                  onClick={togglePause}
+                  className="bg-blue-600 hover:bg-blue-500 text-white px-16 py-6 rounded-xl font-black uppercase tracking-widest flex items-center gap-4 mx-auto transition-all hover:scale-105 active:scale-95 skew-x-[-12deg]"
+                >
+                  <Play size={28} fill="currentColor" className="skew-x-[12deg]" /> 
+                  <span className="skew-x-[12deg] text-xl">Resume Race</span>
+                </button>
+                <p className="text-white/40 mt-8 text-xs font-bold uppercase tracking-[0.4em] italic">Press ESC to Resume</p>
+              </div>
+            </motion.div>
+          )}
+
+          {gameState !== 'PLAYING' && gameState !== 'PAUSED' && (
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -920,16 +1181,28 @@ export default function App() {
                 <motion.div
                   initial={{ scale: 0.9, opacity: 0 }}
                   animate={{ scale: 1, opacity: 1 }}
-                  className="mb-12 grid grid-cols-2 gap-10 bg-black/60 p-10 rounded-3xl border border-white/10 skew-x-[-6deg] backdrop-blur-md"
+                  className="mb-12 flex flex-col items-center"
                 >
-                  <div className="flex flex-col">
-                    <div className="text-zinc-500 text-[11px] font-black uppercase tracking-[0.3em] mb-2 italic">Final Score</div>
-                    <div className="text-6xl font-black text-white italic tracking-tighter">{score}</div>
+                  <div className="grid grid-cols-2 gap-10 bg-black/60 p-10 rounded-3xl border border-white/10 skew-x-[-6deg] backdrop-blur-md mb-8">
+                    <div className="flex flex-col">
+                      <div className="text-zinc-500 text-[11px] font-black uppercase tracking-[0.3em] mb-2 italic">Final Score</div>
+                      <div className="text-6xl font-black text-white italic tracking-tighter">{score}</div>
+                    </div>
+                    <div className="flex flex-col border-l border-white/10 pl-10">
+                      <div className="text-zinc-500 text-[11px] font-black uppercase tracking-[0.3em] mb-2 italic">Best Record</div>
+                      <div className="text-6xl font-black text-blue-500 italic tracking-tighter">{highScore}</div>
+                    </div>
                   </div>
-                  <div className="flex flex-col border-l border-white/10 pl-10">
-                    <div className="text-zinc-500 text-[11px] font-black uppercase tracking-[0.3em] mb-2 italic">Best Record</div>
-                    <div className="text-6xl font-black text-blue-500 italic tracking-tighter">{highScore}</div>
-                  </div>
+                  
+                  {score >= highScore && score > 0 && (
+                    <motion.div 
+                      initial={{ y: 20, opacity: 0 }}
+                      animate={{ y: 0, opacity: 1 }}
+                      className="bg-yellow-500 text-black px-6 py-2 rounded-sm font-black uppercase tracking-[0.2em] italic text-xs mb-8 skew-x-[-12deg]"
+                    >
+                      🏆 New World Record Set
+                    </motion.div>
+                  )}
                 </motion.div>
               )}
 
